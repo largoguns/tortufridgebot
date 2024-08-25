@@ -220,7 +220,7 @@ async function getProductInfo(barcode) {
 // Función para crear un evento en Google Calendar
 function createCalendarEvent(chatId, expirationDate) {
     const fechaRecordatorio = parseDate(expirationDate);
-    fechaRecordatorio.setDate(fechaRecordatorio.getDate() - 2);
+    fechaRecordatorio.setDate(fechaRecordatorio.getDate());
 
     const event = {
         summary: `${productInfo[chatId].name}`,
