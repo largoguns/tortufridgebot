@@ -5,7 +5,30 @@ const TelegramBot = require('node-telegram-bot-api');
 const ZXing = require('node-zxing')();
 const axios = require('axios');
 const FormData = require('form-data');
+const winston = require('winston');
+const DailyRotateFile = require('winston-daily-rotate-file');
 
+// Configurar el logger
+const logger = winston.createLogger({
+    level: 'info',
+    format: winston.format.combine(
+        winston.format.timestamp({
+            format: 'YYYY-MM-DD HH:mm:ss'
+        }),
+        winston.format.printf(info => `${info.timestamp} ${info.level}: ${info.message}`)
+    ),
+    transports: [
+        new DailyRotateFile({
+            filename: 'logs/application-%DATE%.log',
+            datePattern: 'YYYY-MM-DD',
+            maxFiles: '14d' // Mantener archivos de log por 14 días
+        }),
+        new winston.transports.Console() // También muestra los logs en la consola
+    ]
+});
+
+// Ejemplo de cómo registrar un mensaje de información
+logger.info('El bot ha comenzado.');
 
 // Cargar la configuración desde config.json
 const config = JSON.parse(fs.readFileSync('./config/config.json', 'utf8'));
@@ -66,7 +89,7 @@ async function extractExpirationDate(imagePath) {
             return null; // No se encontró una fecha
         }
     } catch (error) {
-        console.error('Error al realizar OCR en la imagen:', error);
+        logger.error(`Error al realizar OCR en la imagen: ${error.message}`);
         return null;
     }
 }
@@ -144,6 +167,7 @@ bot.on('photo', async (msg) => {
             // Procesar la imagen para leer el código de barras
             ZXing.decode(filePath, async function(err, result) {
                 if (err || !result) {
+                    logger.error(`Error al decodificar código de barras: ${err}`);
                     bot.sendMessage(chatId, 'No se pudo leer el código de barras. Por favor, ingresa el nombre del producto manualmente.');
                     userState[chatId] = 'waitingForProductNameManual';
                 } else {
@@ -153,6 +177,7 @@ bot.on('photo', async (msg) => {
                         bot.sendMessage(chatId, 'Por favor, envía una imagen de la fecha de caducidad.');
                         userState[chatId] = 'waitingForExpirationDate';
                     } else {
+                        logger.warn(`Producto no encontrado para el código de barras: ${result}`);
                         bot.sendMessage(chatId, 'No se encontró información para este código de barras. Por favor, ingresa el nombre del producto manualmente.');
                         userState[chatId] = 'waitingForProductNameManual';
                     }
@@ -166,12 +191,14 @@ bot.on('photo', async (msg) => {
                 bot.sendMessage(chatId, `Fecha de caducidad detectada: ${expirationDate}. Creando evento en el calendario...`);
                 createCalendarEvent(chatId, expirationDate);
             } else {
+                logger.warn('No se pudo leer la fecha de caducidad');
                 bot.sendMessage(chatId, 'No se pudo leer la fecha de caducidad. Por favor, ingrésala manualmente en el formato DD/MM/YYYY o MM/YYYY.');
                 userState[chatId] = 'waitingForExpirationDateManual';
             }
             fs.unlinkSync(filePath); // Eliminar la imagen temporal
         }
     } catch (err) {
+        logger.error(`Error al procesar la imagen: ${err.message}`);
         bot.sendMessage(chatId, 'Hubo un error al procesar la imagen.');
         console.error(err);
     }
@@ -197,6 +224,27 @@ bot.on('message', (msg) => {
     }
 });
 
+// Manejador para el comando /logs para enviar el archivo de log actual
+bot.onText(/\/logs/, (msg) => {
+    const chatId = msg.chat.id;
+
+    // Verificar si el usuario está autorizado
+    if (!isUserAuthorized(msg.from.id)) {
+        bot.sendMessage(chatId, "Lo siento, no tienes permiso para usar este bot.");
+        return;
+    }
+
+    // Obtener el archivo de log más reciente
+    const logFileName = path.join(__dirname, 'logs', `application-${new Date().toISOString().slice(0, 10)}.log`);
+
+    // Verificar si el archivo de log existe
+    if (fs.existsSync(logFileName)) {
+        bot.sendDocument(chatId, logFileName);
+    } else {
+        bot.sendMessage(chatId, "No se encontró el archivo de log de hoy.");
+    }
+});
+
 // Función para obtener información del producto desde Open Food Facts
 async function getProductInfo(barcode) {
     try {
@@ -212,7 +260,7 @@ async function getProductInfo(barcode) {
             return null;  // Producto no encontrado
         }
     } catch (error) {
-        console.error('Error al obtener la información del producto:', error);
+        logger.error(`Error al obtener la información del producto: ${error.message}`);
         return null;
     }
 }
@@ -233,8 +281,8 @@ function createCalendarEvent(chatId, expirationDate) {
         resource: event,
     }, (err, event) => {
         if (err) {
+            logger.error(`Error al crear el evento en Google Calendar: ${err.message}`);
             bot.sendMessage(chatId, 'Hubo un error al crear el recordatorio en el calendario.');
-            console.error(err);
             return;
         }
         bot.sendMessage(chatId, `Recordatorio para consumir ${productInfo[chatId].name} creado para el ${fechaRecordatorio.toDateString()}.`);
